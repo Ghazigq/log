@@ -21,8 +21,6 @@ static void test_log(void);
 
 int main(void) {
 
-    log_init();
-
     /* dynamic set enable or disable for output logs (true or false) */
     // log_set_output_enabled(false);
     /* dynamic set output logs's level (from LOG_LVL_ASSERT to LOG_LVL_VERBOSE) */
@@ -34,6 +32,7 @@ int main(void) {
     /* dynamic set output logs's tag filter */
     // log_set_filter_tag_lvl("main", LOG_FILTER_LVL_SILENT);
 
+    log_set_file_output_enabled(true);
     test_log();
 
     return EXIT_SUCCESS;

@@ -24,8 +24,6 @@
 /* output newline sign */
 #define LOG_NEWLINE_SIGN                    "\n"
 
-#ifdef LOG_COLOR_ENABLE
-
 #define CSI_START "\033["
 #define CSI_END "\033[0m"
 
@@ -62,7 +60,6 @@
 #define LOG_COLOR_DEBUG     (F_GREEN B_NULL S_NORMAL)
 #define LOG_COLOR_VERBOSE   (F_BLUE B_NULL S_NORMAL)
 
-#endif /* LOG_COLOR_ENABLE */
 
 #ifdef linux
 #define likely(x) __builtin_expect(!!(x), 1)
@@ -93,13 +90,7 @@ typedef struct {
     size_t enabled_fmt_set[LOG_LVL_MAX];
     bool init_ok;
     bool output_enabled;
-    bool output_lock_enabled;
-    bool output_is_locked_before_enable;
-    bool output_is_locked_before_disable;
-
-#ifdef LOG_COLOR_ENABLE
     bool text_color_enabled;
-#endif
 
 #ifdef LOG_FILE_ENABLE
     char *name;              /* file name */
@@ -111,7 +102,21 @@ typedef struct {
 } log_t;
 
 /* log */
-static log_t g_log = {0};
+static log_t g_log = {
+    .filter = {
+        .level = LOG_LVL_VERBOSE,
+    },
+    .enabled_fmt_set = {
+        LOG_FMT_ALL & ~LOG_FMT_P_INFO & ~LOG_FMT_T_INFO,            /* LOG_LVL_ASSERT */
+        LOG_FMT_LVL | LOG_FMT_TAG | LOG_FMT_TIME | LOG_FMT_DIR,     /* LOG_LVL_ERROR */
+        LOG_FMT_LVL | LOG_FMT_TAG | LOG_FMT_TIME | LOG_FMT_DIR,     /* LOG_LVL_WARN */
+        LOG_FMT_LVL | LOG_FMT_TAG | LOG_FMT_TIME,                   /* LOG_LVL_INFO */
+        LOG_FMT_ALL & ~LOG_FMT_P_INFO & ~LOG_FMT_T_INFO,            /* LOG_LVL_DEBUG */
+        LOG_FMT_ALL,                                                /* LOG_LVL_VERBOSE */
+    },
+    .output_enabled = true,
+    .text_color_enabled = true,
+};
 /* every line log's buffer */
 static char log_buf[LOG_LINE_BUF_SIZE] = {0};
 /* level output info */
@@ -124,7 +129,6 @@ static const char *level_output_info[] = {
     [LOG_LVL_VERBOSE] = "V/",
 };
 
-#ifdef LOG_COLOR_ENABLE
 /* color output info */
 static const char *color_output_info[] = {
     [LOG_LVL_ASSERT] = LOG_COLOR_ASSERT,
@@ -134,37 +138,22 @@ static const char *color_output_info[] = {
     [LOG_LVL_DEBUG] = LOG_COLOR_DEBUG,
     [LOG_LVL_VERBOSE] = LOG_COLOR_VERBOSE,
 };
-#endif /* LOG_COLOR_ENABLE */
 
 void (*log_assert_hook)(const char *expr, const char *func, size_t line);
 
 /* port */
-static pthread_mutex_t output_lock;
+static pthread_mutex_t output_lock = PTHREAD_MUTEX_INITIALIZER;
 
 #ifdef LOG_FILE_ENABLE
-
-#define LOG_FILE_SEM_KEY   ((key_t)0x19910612)
-#ifdef _SEM_SEMUN_UNDEFINED
-union semun {
-    int              val;    /* Value for SETVAL */
-    struct semid_ds *buf;    /* Buffer for IPC_STAT, IPC_SET */
-    unsigned short  *array;  /* Array for GETALL, SETALL */
-    struct seminfo  *__buf;  /* Buffer for IPC_INFO
-                                (Linux-specific) */
-};
-#endif
-
-static int semid = -1;
-static struct sembuf const up = {0, 1, SEM_UNDO};
-static struct sembuf const down = {0, -1, SEM_UNDO};
+static pthread_mutex_t file_lock = PTHREAD_MUTEX_INITIALIZER;
 #endif
 
 /* log */
 static bool get_fmt_enabled(uint8_t level, size_t set);
 
 /* port */
+static int log_init(void);
 static int log_port_init(void);
-static int log_port_deinit(void);
 static void log_port_output(const char *log, size_t size);
 static void log_port_output_lock(void);
 static void log_port_output_unlock(void);
@@ -279,6 +268,9 @@ static void log_file_write(const char *log, size_t size)
 
     log_file_port_lock();
 
+    if (g_log.fp == NULL)
+        goto __exit;
+
     fseek(g_log.fp, 0L, SEEK_END);
     file_size = ftell(g_log.fp);
 
@@ -325,71 +317,16 @@ int log_init(void)
 {
     int ret = 0;
 
-    if (g_log.init_ok) {
-        return ret;
-    }
-
     /* port initialize */
-    ret = log_port_init();
-    if (ret != 0) {
+    if ((ret = log_port_init()) != 0)
         return ret;
-    }
-
-#ifdef LOG_FILE_ENABLE
-    log_file_init();
-#endif
-
-    /* enable the output lock */
-    log_output_lock_enabled(true);
-    /* output locked status initialize */
-    g_log.output_is_locked_before_enable = false;
-    g_log.output_is_locked_before_disable = false;
-
-#ifdef LOG_COLOR_ENABLE
-    /* disable text color by default */
-    log_set_text_color_enabled(true);
-#endif
-
-    /* set level is LOG_LVL_VERBOSE */
-    log_set_filter_lvl(LOG_LVL_VERBOSE);
-
-    /* set default log format */
-    log_set_fmt(LOG_LVL_ASSERT, LOG_FMT_ALL & ~LOG_FMT_P_INFO & ~LOG_FMT_T_INFO);
-    log_set_fmt(LOG_LVL_ERROR, LOG_FMT_LVL | LOG_FMT_TAG | LOG_FMT_TIME | LOG_FMT_DIR);
-    log_set_fmt(LOG_LVL_WARN, LOG_FMT_LVL | LOG_FMT_TAG | LOG_FMT_TIME | LOG_FMT_DIR);
-    log_set_fmt(LOG_LVL_INFO, LOG_FMT_LVL | LOG_FMT_TAG | LOG_FMT_TIME);
-    log_set_fmt(LOG_LVL_DEBUG, LOG_FMT_ALL & ~LOG_FMT_P_INFO & ~LOG_FMT_T_INFO);
-    log_set_fmt(LOG_LVL_VERBOSE, LOG_FMT_ALL);
 
     /* close printf buffer */
     setbuf(stdout, NULL);
 
-    /* enable output */
-    log_set_output_enabled(true);
-
     g_log.init_ok = true;
 
     return ret;
-}
-
-/**
- * EasyLogger deinitialize.
- *
- */
-void log_deinit(void)
-{
-    if (!g_log.init_ok) {
-        return;
-    }
-
-    /* port deinitialize */
-    log_port_deinit();
-
-#ifdef LOG_FILE_ENABLE
-    log_file_deinit();
-#endif
-
-    g_log.init_ok = false;
 }
 
 /**
@@ -402,50 +339,15 @@ void log_set_output_enabled(bool enabled)
     g_log.output_enabled = enabled;
 }
 
-#ifdef LOG_COLOR_ENABLE
-/**
- * set log text color enable or disable
- *
- * @param enabled TRUE: enable FALSE:disable
- */
-void log_set_text_color_enabled(bool enabled)
+#ifdef LOG_FILE_ENABLE
+void log_set_file_output_enabled(bool enabled)
 {
-    g_log.text_color_enabled = enabled;
+    if (enabled && g_log.fp == NULL)
+        log_file_init();
+    else if(g_log.fp != NULL)
+        log_file_deinit();
 }
-
-/**
- * get log text color enable status
- *
- * @return enable or disable
- */
-bool log_get_text_color_enabled(void)
-{
-    return g_log.text_color_enabled;
-}
-#endif /* LOG_COLOR_ENABLE */
-
-/**
- * get output is enable or disable
- *
- * @return enable or disable
- */
-bool log_get_output_enabled(void)
-{
-    return g_log.output_enabled;
-}
-
-/**
- * set log output format. only enable or disable
- *
- * @param level level
- * @param set format set
- */
-void log_set_fmt(uint8_t level, size_t set)
-{
-    LOG_CHECK(level > LOG_LVL_VERBOSE, return;);
-
-    g_log.enabled_fmt_set[level] = set;
-}
+#endif
 
 /**
  * set log filter all parameter
@@ -496,32 +398,6 @@ void log_set_filter_kw(const char *keyword)
 }
 
 /**
- * lock output
- */
-void log_output_lock(void)
-{
-    if (g_log.output_lock_enabled) {
-        log_port_output_lock();
-        g_log.output_is_locked_before_disable = true;
-    } else {
-        g_log.output_is_locked_before_enable = true;
-    }
-}
-
-/**
- * unlock output
- */
-void log_output_unlock(void)
-{
-    if (g_log.output_lock_enabled) {
-        log_port_output_unlock();
-        g_log.output_is_locked_before_disable = false;
-    } else {
-        g_log.output_is_locked_before_enable = false;
-    }
-}
-
-/**
  * Set the filter's level by different tag.
  * The log on this tag which level is less than it will stop output.
  *
@@ -546,7 +422,7 @@ void log_set_filter_tag_lvl(const char *tag, uint8_t level)
     uint8_t i = 0;
 
     if (!g_log.init_ok) {
-        return;
+        log_init();
     }
 
     log_port_output_lock();
@@ -581,7 +457,7 @@ void log_set_filter_tag_lvl(const char *tag, uint8_t level)
             }
         }
     }
-    log_output_unlock();
+    log_port_output_unlock();
 }
 
 /**
@@ -599,7 +475,7 @@ int log_get_filter_tag_lvl(const char *tag)
     uint8_t level = LOG_FILTER_LVL_ALL;
 
     if (!g_log.init_ok) {
-        return level;
+        log_init();
     }
 
     log_port_output_lock();
@@ -611,7 +487,7 @@ int log_get_filter_tag_lvl(const char *tag)
             break;
         }
     }
-    log_output_unlock();
+    log_port_output_unlock();
 
     return level;
 }
@@ -629,7 +505,7 @@ void log_raw(const char *format, ...)
     int fmt_result;
 
     if (!g_log.init_ok) {
-        return;
+        log_init();
     }
 
     /* check output enabled */
@@ -641,7 +517,7 @@ void log_raw(const char *format, ...)
     va_start(args, format);
 
     /* lock output */
-    log_output_lock();
+    log_port_output_lock();
 
     /* package log data to buffer */
     fmt_result = vsnprintf(log_buf, LOG_LINE_BUF_SIZE, format, args);
@@ -661,7 +537,7 @@ void log_raw(const char *format, ...)
 #endif
 
     /* unlock output */
-    log_output_unlock();
+    log_port_output_unlock();
 
     va_end(args);
 }
@@ -691,7 +567,7 @@ void log_output(uint8_t level, const char *tag, const char *file, const char *fu
     LOG_CHECK(level > LOG_LVL_VERBOSE, return;);
 
     if (!g_log.init_ok) {
-        return;
+        log_init();
     }
 
     /* check output enabled */
@@ -707,15 +583,13 @@ void log_output(uint8_t level, const char *tag, const char *file, const char *fu
     /* args point to the first variable parameter */
     va_start(args, format);
     /* lock output */
-    log_output_lock();
+    log_port_output_lock();
 
-#ifdef LOG_COLOR_ENABLE
     /* add CSI start sign and color info */
     if (g_log.text_color_enabled) {
         log_len += log_strcpy(log_len, log_buf + log_len, CSI_START);
         log_len += log_strcpy(log_len, log_buf + log_len, color_output_info[level]);
     }
-#endif
 
     /* package level info */
     if (get_fmt_enabled(level, LOG_FMT_LVL)) {
@@ -792,17 +666,11 @@ void log_output(uint8_t level, const char *tag, const char *file, const char *fu
         log_len = LOG_LINE_BUF_SIZE;
     }
     /* overflow check and reserve some space for CSI end sign and newline sign */
-#ifdef LOG_COLOR_ENABLE
     if (log_len + (sizeof(CSI_END) - 1) + newline_len > LOG_LINE_BUF_SIZE) {
         /* using max length */
         log_len = LOG_LINE_BUF_SIZE;
         /* reserve some space for CSI end sign */
         log_len -= (sizeof(CSI_END) - 1);
-#else
-    if (log_len + newline_len > LOG_LINE_BUF_SIZE) {
-        /* using max length */
-        log_len = LOG_LINE_BUF_SIZE;
-#endif /* LOG_COLOR_ENABLE */
         /* reserve some space for newline sign */
         log_len -= newline_len;
     }
@@ -813,17 +681,15 @@ void log_output(uint8_t level, const char *tag, const char *file, const char *fu
         /* find the keyword */
         if (!strstr(log_buf, g_log.filter.keyword)) {
             /* unlock output */
-            log_output_unlock();
+            log_port_output_unlock();
             return;
         }
     }
 
-#ifdef LOG_COLOR_ENABLE
     /* add CSI end sign */
     if (g_log.text_color_enabled) {
         log_len += log_strcpy(log_len, log_buf + log_len, CSI_END);
     }
-#endif
 
     /* package newline sign */
     log_len += log_strcpy(log_len, log_buf + log_len, LOG_NEWLINE_SIGN);
@@ -836,7 +702,7 @@ void log_output(uint8_t level, const char *tag, const char *file, const char *fu
 #endif
 
     /* unlock output */
-    log_output_unlock();
+    log_port_output_unlock();
 }
 
 /**
@@ -855,27 +721,6 @@ static bool get_fmt_enabled(uint8_t level, size_t set)
         return true;
     } else {
         return false;
-    }
-}
-
-/**
- * enable or disable logger output lock
- * @note disable this lock is not recommended except you want output system exception log
- *
- * @param enabled true: enable  false: disable
- */
-void log_output_lock_enabled(bool enabled)
-{
-    g_log.output_lock_enabled = enabled;
-    /* it will re-lock or re-unlock before output lock enable */
-    if (g_log.output_lock_enabled) {
-        if (!g_log.output_is_locked_before_disable && g_log.output_is_locked_before_enable) {
-            /* the output lock is unlocked before disable, and the lock will unlocking after enable */
-            log_port_output_lock();
-        } else if (g_log.output_is_locked_before_disable && !g_log.output_is_locked_before_enable) {
-            /* the output lock is locked before disable, and the lock will locking after enable */
-            log_port_output_unlock();
-        }
     }
 }
 
@@ -908,7 +753,6 @@ int log_find_lvl(const char *log)
     LOG_CHECK((g_log.enabled_fmt_set[LOG_LVL_DEBUG] & LOG_FMT_LVL) == 0, return -1;);
     LOG_CHECK((g_log.enabled_fmt_set[LOG_LVL_VERBOSE] & LOG_FMT_LVL) == 0, return -1;);
 
-#ifdef LOG_COLOR_ENABLE
     uint8_t i;
     size_t csi_start_len = strlen(CSI_START);
     for (i = 0; i < LOG_LVL_MAX; i++) {
@@ -918,24 +762,6 @@ int log_find_lvl(const char *log)
     }
     /* found failed */
     return -1;
-#else
-    switch (log[0]) {
-    case 'A':
-        return LOG_LVL_ASSERT;
-    case 'E':
-        return LOG_LVL_ERROR;
-    case 'W':
-        return LOG_LVL_WARN;
-    case 'I':
-        return LOG_LVL_INFO;
-    case 'D':
-        return LOG_LVL_DEBUG;
-    case 'V':
-        return LOG_LVL_VERBOSE;
-    default:
-        return -1;
-    }
-#endif
 }
 
 /**
@@ -959,11 +785,7 @@ const char *log_find_tag(const char *log, uint8_t lvl, size_t *tag_len)
     /* make sure the log tag is output on each format */
     LOG_CHECK((g_log.enabled_fmt_set[lvl] & LOG_FMT_TAG) == 0, return NULL;);
 
-#ifdef LOG_COLOR_ENABLE
     tag = log + strlen(CSI_START) + strlen(color_output_info[lvl]) + strlen(level_output_info[lvl]);
-#else
-    tag = log + strlen(level_output_info[lvl]);
-#endif
     /* find the first space after tag */
     if ((tag_end = memchr(tag, ' ', LOG_FILTER_TAG_MAX_LEN)) != NULL) {
         *tag_len = tag_end - tag;
@@ -992,7 +814,7 @@ void log_hexdump(const char *name, uint8_t width, uint8_t *buf, uint16_t size)
     int fmt_result;
 
     if (!g_log.init_ok) {
-        return;
+        log_init();
     }
 
     if (!g_log.output_enabled) {
@@ -1007,7 +829,7 @@ void log_hexdump(const char *name, uint8_t width, uint8_t *buf, uint16_t size)
     }
 
     /* lock output */
-    log_output_lock();
+    log_port_output_lock();
 
     for (i = 0; i < size; i += width) {
         /* package header */
@@ -1053,7 +875,7 @@ void log_hexdump(const char *name, uint8_t width, uint8_t *buf, uint16_t size)
 #endif
     }
     /* unlock output */
-    log_output_unlock();
+    log_port_output_unlock();
 }
 
 /**
@@ -1062,16 +884,6 @@ void log_hexdump(const char *name, uint8_t width, uint8_t *buf, uint16_t size)
  * @return result
  */
 static int log_port_init(void) {
-    pthread_mutex_init(&output_lock, NULL);
-    return 0;
-}
-
-/**
- * EasyLogger port deinitialize
- *
- */
-static int log_port_deinit(void) {
-    pthread_mutex_destroy(&output_lock);
     return 0;
 }
 
@@ -1150,85 +962,27 @@ static const char *log_port_get_t_info(void) {
 
 #ifdef LOG_FILE_ENABLE
 
-/*  open lock  */
-static int lock_open(void)
-{
-    int id, rc, i;
-    union semun arg;
-    struct semid_ds ds;
-
-    id = semget(LOG_FILE_SEM_KEY, 1, 0666);
-    if(unlikely(id == -1))
-        goto err;
-
-    arg.buf = &ds;
-
-    for (i = 0; i < 10; i++) {
-        rc = semctl(id, 0, IPC_STAT, arg);
-        if (unlikely(rc == -1))
-            goto err;
-
-        if(ds.sem_otime != 0)
-            break;
-
-        usleep(10 * 1000);
-    }
-
-    if (unlikely(ds.sem_otime == 0))
-        goto err;
-
-    return id;
-err:
-    return -1;
-}
-
 /*  file port initialize */
 static int log_file_port_init(void) {
-    int id, rc;
-    union semun arg;
-    struct sembuf sembuf;
-
-    id = semget(LOG_FILE_SEM_KEY, 1, IPC_CREAT | IPC_EXCL | 0666);
-    if(likely(id == -1)) {
-        id = lock_open();
-        if (id == -1)
-            return -1;
-    } else {
-        arg.val = 0;
-        rc = semctl(id, 0, SETVAL, arg);
-        if (rc == -1)
-            return -1;
-
-        sembuf.sem_num = 0;
-        sembuf.sem_op = 1;
-        sembuf.sem_flg = 0;
-
-        rc = semop(id, &sembuf, 1);
-        if (rc == -1)
-            return -1;
-    }
-
-    semid = id;
-
     return 0;
 }
 
 /* file log lock */
 static void inline log_file_port_lock(void)
 {
-    semid == -1 ? -1 : semop(semid, (struct sembuf *)&down, 1);
+    pthread_mutex_lock(&file_lock);
 }
 
 /* file log unlock */
 static void inline log_file_port_unlock(void)
 {
-    semid == -1 ? -1 : semop(semid, (struct sembuf *)&up, 1);
+    pthread_mutex_unlock(&file_lock);
 }
 
 /* file log deinit */
 static void log_file_port_deinit(void)
 {
-    semid = -1;;
+
 }
 
 #endif

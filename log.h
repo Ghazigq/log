@@ -9,12 +9,8 @@
 extern "C" {
 #endif
 
-/* enable log output. default open this macro */
-#define LOG_OUTPUT_ENABLE
 /* enable assert check */
 // #define LOG_ASSERT_ENABLE
-/* enable log color */
-#define LOG_COLOR_ENABLE
 /* output filter's tag level max num */
 #define LOG_FILTER_TAG_LVL_MAX_NUM          5
 
@@ -42,21 +38,10 @@ typedef enum {
 #define LOG_FILTER_LVL_SILENT               LOG_LVL_ASSERT
 #define LOG_FILTER_LVL_ALL                  LOG_LVL_VERBOSE
 
-#define LOG_CHECK(condition, action)                \
-  do {                                              \
-    if (condition) {                                \
-      log_a("check [" #condition "]\n");  \
-      action;                                       \
-    }                                               \
-  } while (0)
-
-int  log_init(void);
-void log_deinit(void);
 void log_set_output_enabled(bool enabled);
-bool log_get_output_enabled(void);
-void log_set_text_color_enabled(bool enabled);
-bool log_get_text_color_enabled(void);
-void log_set_fmt(uint8_t level, size_t set);
+#ifdef LOG_FILE_ENABLE
+void log_set_file_output_enabled(bool enabled);
+#endif
 void log_set_filter(uint8_t level, const char *tag, const char *keyword);
 void log_set_filter_lvl(uint8_t level);
 void log_set_filter_tag(const char *tag);
@@ -64,7 +49,6 @@ void log_set_filter_kw(const char *keyword);
 void log_set_filter_tag_lvl(const char *tag, uint8_t level);
 int  log_get_filter_tag_lvl(const char *tag);
 void log_raw(const char *format, ...);
-void log_output_lock_enabled(bool enabled);
 void log_assert_set_hook(void (*hook)(const char* expr, const char* func, size_t line));
 int  log_find_lvl(const char *log);
 const char *log_find_tag(const char *log, uint8_t lvl, size_t *tag_len);
@@ -86,27 +70,26 @@ void log_hexdump(const char *name, uint8_t width, uint8_t *buf, uint16_t size);
     #define LOG_ASSERT(EXPR)                    ((void)0);
 #endif
 
-#ifndef LOG_OUTPUT_ENABLE
-    #define log_assert(tag, ...)
-    #define log_error(tag, ...)
-    #define log_warn(tag, ...)
-    #define log_info(tag, ...)
-    #define log_debug(tag, ...)
-    #define log_verbose(tag, ...)
-#else /* LOG_OUTPUT_ENABLE */
-    #define log_assert(tag, ...) \
-            log_output(LOG_LVL_ASSERT, tag, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__)
-    #define log_error(tag, ...) \
-            log_output(LOG_LVL_ERROR, tag, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__)
-    #define log_warn(tag, ...) \
-            log_output(LOG_LVL_WARN, tag, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__)
-    #define log_info(tag, ...) \
-            log_output(LOG_LVL_INFO, tag, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__)
-    #define log_debug(tag, ...) \
-            log_output(LOG_LVL_DEBUG, tag, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__)
-    #define log_verbose(tag, ...) \
-            log_output(LOG_LVL_VERBOSE, tag, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__)
-#endif /* LOG_OUTPUT_ENABLE */
+#define LOG_CHECK(condition, action)                                                                                   \
+    do {                                                                                                               \
+        if (condition) {                                                                                               \
+            log_assert(LOG_TAG, "check [" #condition "]\n");                                                           \
+            action;                                                                                                    \
+        }                                                                                                              \
+    } while (0)
+
+#define log_assert(tag, ...) \
+        log_output(LOG_LVL_ASSERT, tag, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__)
+#define log_error(tag, ...) \
+        log_output(LOG_LVL_ERROR, tag, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__)
+#define log_warn(tag, ...) \
+        log_output(LOG_LVL_WARN, tag, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__)
+#define log_info(tag, ...) \
+        log_output(LOG_LVL_INFO, tag, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__)
+#define log_debug(tag, ...) \
+        log_output(LOG_LVL_DEBUG, tag, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__)
+#define log_verbose(tag, ...) \
+        log_output(LOG_LVL_VERBOSE, tag, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__)
 
 /* all formats index */
 typedef enum {
