@@ -9,20 +9,6 @@
 extern "C" {
 #endif
 
-/* enable assert check */
-// #define LOG_ASSERT_ENABLE
-/* output filter's tag level max num */
-#define LOG_FILTER_TAG_LVL_MAX_NUM          5
-
-/* enable log write file.*/
-#define LOG_FILE_ENABLE
-/* log file name */
-#define LOG_FILE_NAME      "/tmp/log_file.log"
-/* EasyLogger file log plugin's using max rotate file count */
-#define LOG_FILE_MAX_ROTATE 3
-/* EasyLogger file log plugin's using file max size */
-#define LOG_FILE_MAX_SIZE  (10 * 1024)
-
 /* output log's level */
 typedef enum {
     LOG_LVL_ASSERT = 0,
@@ -38,37 +24,16 @@ typedef enum {
 #define LOG_FILTER_LVL_SILENT               LOG_LVL_ASSERT
 #define LOG_FILTER_LVL_ALL                  LOG_LVL_VERBOSE
 
-void log_set_output_enabled(bool enabled);
-#ifdef LOG_FILE_ENABLE
-void log_set_file_output_enabled(bool enabled);
-#endif
-void log_set_filter(uint8_t level, const char *tag, const char *keyword);
-void log_set_filter_lvl(uint8_t level);
-void log_set_filter_tag(const char *tag);
-void log_set_filter_kw(const char *keyword);
-void log_set_filter_tag_lvl(const char *tag, uint8_t level);
-int  log_get_filter_tag_lvl(const char *tag);
-void log_raw(const char *format, ...);
-void log_assert_set_hook(void (*hook)(const char* expr, const char* func, size_t line));
-int  log_find_lvl(const char *log);
-const char *log_find_tag(const char *log, uint8_t lvl, size_t *tag_len);
-void log_hexdump(const char *name, uint8_t width, uint8_t *buf, uint16_t size);
-
-/* EasyLogger assert for developer. */
-#ifdef LOG_ASSERT_ENABLE
-    #define LOG_ASSERT(EXPR)                                                 \
-    if (!(EXPR))                                                              \
-    {                                                                         \
-        if (log_assert_hook == NULL) {                                       \
-            log_assert("log", "(%s) has assert failed at %s:%ld.", #EXPR, __FUNCTION__, __LINE__); \
-            while (1);                                                        \
-        } else {                                                              \
-            log_assert_hook(#EXPR, __FUNCTION__, __LINE__);                  \
-        }                                                                     \
+#define LOG_ASSERT(EXPR)                                                                                               \
+    if (!(EXPR)) {                                                                                                     \
+        if (log_assert_hook == NULL) {                                                                                 \
+            log_assert("log", "(%s) has assert failed at %s:%ld.", #EXPR, __FUNCTION__, __LINE__);                     \
+            while (1)                                                                                                  \
+                ;                                                                                                      \
+        } else {                                                                                                       \
+            log_assert_hook(#EXPR, __FUNCTION__, __LINE__);                                                            \
+        }                                                                                                              \
     }
-#else
-    #define LOG_ASSERT(EXPR)                    ((void)0);
-#endif
 
 #define LOG_CHECK(condition, action)                                                                                   \
     do {                                                                                                               \
@@ -91,29 +56,10 @@ void log_hexdump(const char *name, uint8_t width, uint8_t *buf, uint16_t size);
 #define log_verbose(tag, ...) \
         log_output(LOG_LVL_VERBOSE, tag, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__)
 
-/* all formats index */
-typedef enum {
-    LOG_FMT_LVL    = 1 << 0, /**< level */
-    LOG_FMT_TAG    = 1 << 1, /**< tag */
-    LOG_FMT_TIME   = 1 << 2, /**< current time */
-    LOG_FMT_P_INFO = 1 << 3, /**< process info */
-    LOG_FMT_T_INFO = 1 << 4, /**< thread info */
-    LOG_FMT_DIR    = 1 << 5, /**< file directory and name */
-    LOG_FMT_FUNC   = 1 << 6, /**< function name */
-    LOG_FMT_LINE   = 1 << 7, /**< line number */
-} LOG_FMT;
-
-/* macro definition for all formats */
-#define LOG_FMT_ALL    (LOG_FMT_LVL|LOG_FMT_TAG|LOG_FMT_TIME|LOG_FMT_P_INFO|LOG_FMT_T_INFO| \
-    LOG_FMT_DIR|LOG_FMT_FUNC|LOG_FMT_LINE)
-
 extern void (*log_assert_hook)(const char* expr, const char* func, size_t line);
 extern void log_output(uint8_t level, const char *tag, const char *file, const char *func,
         const long line, const char *format, ...);
-/**
- * log API short definition
- * NOTE: The `LOG_TAG` and `LOG_LVL` must defined before including the <g_log.h> when you want to use log_x API.
- */
+
 #if !defined(LOG_TAG)
     #define LOG_TAG          "NO_TAG"
 #endif
@@ -151,6 +97,23 @@ extern void log_output(uint8_t level, const char *tag, const char *file, const c
 #else
     #define log_v(...)       ((void)0);
 #endif
+
+void log_set_output_enabled(bool enabled);
+void log_raw(const char *format, ...);
+void log_hexdump(const char *name, uint8_t width, uint8_t *buf, uint16_t size);
+void log_assert_set_hook(void (*hook)(const char* expr, const char* func, size_t line));
+
+void log_set_file_output_enabled(bool enabled);
+void log_set_file_name(const char *name); /* name set before file_output enable */
+
+void log_set_filter(uint8_t level, const char *tag, const char *keyword);
+void log_set_filter_lvl(uint8_t level);
+void log_set_filter_tag(const char *tag);
+void log_set_filter_kw(const char *keyword);
+void log_set_filter_tag_lvl(const char *tag, uint8_t level);
+int  log_get_filter_tag_lvl(const char *tag);
+int  log_find_lvl(const char *log);
+const char *log_find_tag(const char *log, uint8_t lvl, size_t *tag_len);
 
 #ifdef __cplusplus
 }

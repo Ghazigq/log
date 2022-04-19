@@ -32,6 +32,7 @@ int main(void) {
     /* dynamic set output logs's tag filter */
     // log_set_filter_tag_lvl("main", LOG_FILTER_LVL_SILENT);
 
+    log_set_file_name("/tmp/log.txt");
     log_set_file_output_enabled(true);
     test_log();
 

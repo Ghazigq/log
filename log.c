@@ -1,17 +1,35 @@
 
-#define LOG_TAG "log"
+#define LOG_TAG         "log"
+#define LOG_LVL          LOG_LVL_VERBOSE
 
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
-#include <time.h>
-#include <unistd.h>
-#include <pthread.h>
-#include <sys/ipc.h>
-#include <sys/sem.h>
-#include <sys/time.h>
+#include "log.h"
 
-#include <log.h>
+#ifdef linux
+#define likely(x) __builtin_expect(!!(x), 1)
+#define unlikely(x) __builtin_expect(!!(x), 0)
+#else
+#define likely(x)   (x)
+#define unlikely(x) (x)
+#endif
+
+/* all formats index */
+typedef enum {
+    LOG_FMT_LVL    = 1 << 0, /**< level */
+    LOG_FMT_TAG    = 1 << 1, /**< tag */
+    LOG_FMT_TIME   = 1 << 2, /**< current time */
+    LOG_FMT_P_INFO = 1 << 3, /**< process info */
+    LOG_FMT_T_INFO = 1 << 4, /**< thread info */
+    LOG_FMT_DIR    = 1 << 5, /**< file directory and name */
+    LOG_FMT_FUNC   = 1 << 6, /**< function name */
+    LOG_FMT_LINE   = 1 << 7, /**< line number */
+} LOG_FMT;
+
+/* macro definition for all formats */
+#define LOG_FMT_ALL    (LOG_FMT_LVL|LOG_FMT_TAG|LOG_FMT_TIME|LOG_FMT_P_INFO|LOG_FMT_T_INFO| \
+    LOG_FMT_DIR|LOG_FMT_FUNC|LOG_FMT_LINE)
 
 /* buffer size for every line's log */
 #define LOG_LINE_BUF_SIZE                   1024
@@ -21,6 +39,13 @@
 #define LOG_FILTER_TAG_MAX_LEN              16
 /* output filter's keyword max length */
 #define LOG_FILTER_KW_MAX_LEN               16
+/* output filter's tag level max num */
+#define LOG_FILTER_TAG_LVL_MAX_NUM          5
+/* EasyLogger file log plugin's using max rotate file count */
+#define LOG_FILE_MAX_ROTATE 3
+/* EasyLogger file log plugin's using file max size */
+#define LOG_FILE_MAX_SIZE  (10 * 1024)
+
 /* output newline sign */
 #define LOG_NEWLINE_SIGN                    "\n"
 
@@ -60,15 +85,6 @@
 #define LOG_COLOR_DEBUG     (F_GREEN B_NULL S_NORMAL)
 #define LOG_COLOR_VERBOSE   (F_BLUE B_NULL S_NORMAL)
 
-
-#ifdef linux
-#define likely(x) __builtin_expect(!!(x), 1)
-#define unlikely(x) __builtin_expect(!!(x), 0)
-#else
-#define likely(x)   (x)
-#define unlikely(x) (x)
-#endif
-
 /* output log's tag filter */
 typedef struct {
     uint8_t level;
@@ -91,14 +107,11 @@ typedef struct {
     bool init_ok;
     bool output_enabled;
     bool text_color_enabled;
-
-#ifdef LOG_FILE_ENABLE
+    /* file */
     char *name;              /* file name */
     FILE *fp;                /* file descriptor */
     size_t max_size;         /* file max size */
     int max_rotate;          /* max rotate file count */
-#endif
-
 } log_t;
 
 /* log */
@@ -116,6 +129,8 @@ static log_t g_log = {
     },
     .output_enabled = true,
     .text_color_enabled = true,
+    .max_size = LOG_FILE_MAX_SIZE,
+    .max_rotate = LOG_FILE_MAX_ROTATE,
 };
 /* every line log's buffer */
 static char log_buf[LOG_LINE_BUF_SIZE] = {0};
@@ -141,13 +156,6 @@ static const char *color_output_info[] = {
 
 void (*log_assert_hook)(const char *expr, const char *func, size_t line);
 
-/* port */
-static pthread_mutex_t output_lock = PTHREAD_MUTEX_INITIALIZER;
-
-#ifdef LOG_FILE_ENABLE
-static pthread_mutex_t file_lock = PTHREAD_MUTEX_INITIALIZER;
-#endif
-
 /* log */
 static bool get_fmt_enabled(uint8_t level, size_t set);
 
@@ -161,12 +169,10 @@ static const char *log_port_get_time(void);
 static const char *log_port_get_p_info(void);
 static const char *log_port_get_t_info(void);
 
-#ifdef LOG_FILE_ENABLE
 static int log_file_port_init(void);
 static void inline log_file_port_lock(void);
 static void inline log_file_port_unlock(void);
 static void log_file_port_deinit(void);
-#endif
 
 /**
  * another copy string function
@@ -195,22 +201,15 @@ static size_t log_strcpy(size_t cur_len, char *dst, const char *src)
     return src - src_old;
 }
 
-#ifdef LOG_FILE_ENABLE
 static int log_file_init(void)
 {
     log_file_port_init();
 
-    g_log.name = LOG_FILE_NAME;
-    g_log.max_size = LOG_FILE_MAX_SIZE;
-    g_log.max_rotate = LOG_FILE_MAX_ROTATE;
-
     log_file_port_lock();
 
-    if (g_log.name != NULL && strlen(g_log.name) > 0)
-        g_log.fp = fopen(g_log.name, "a+");
+    g_log.fp = fopen(g_log.name, "a+");
 
     log_file_port_unlock();
-
     return 0;
 }
 
@@ -306,7 +305,6 @@ static void log_file_deinit(void)
     log_file_port_deinit();
 
 }
-#endif
 
 /**
  * EasyLogger initialize.
@@ -339,15 +337,33 @@ void log_set_output_enabled(bool enabled)
     g_log.output_enabled = enabled;
 }
 
-#ifdef LOG_FILE_ENABLE
+/**
+ * set log file output enable or disable
+ *
+ * @param enabled TRUE: enable FALSE: disable
+ */
 void log_set_file_output_enabled(bool enabled)
 {
+    LOG_CHECK(g_log.name == NULL, return);
+
     if (enabled && g_log.fp == NULL)
         log_file_init();
     else if(g_log.fp != NULL)
         log_file_deinit();
 }
-#endif
+
+/**
+ * set log file name
+ *
+ * @param name log file name
+ */
+void log_set_file_name(const char *name)
+{
+    LOG_CHECK(name == NULL || strlen(name) == 0, return);
+    LOG_CHECK(g_log.fp != NULL, return);
+
+    g_log.name = (char *)name;
+}
 
 /**
  * set log filter all parameter
@@ -531,10 +547,8 @@ void log_raw(const char *format, ...)
     /* output log */
     log_port_output(log_buf, log_len);
 
-#ifdef LOG_FILE_ENABLE
     /* write the file */
     log_file_write(log_buf, log_len);
-#endif
 
     /* unlock output */
     log_port_output_unlock();
@@ -696,10 +710,8 @@ void log_output(uint8_t level, const char *tag, const char *file, const char *fu
     /* output log */
     log_port_output(log_buf, log_len);
 
-#ifdef LOG_FILE_ENABLE
     /* write the file */
     log_file_write(log_buf, log_len);
-#endif
 
     /* unlock output */
     log_port_output_unlock();
@@ -869,53 +881,41 @@ void log_hexdump(const char *name, uint8_t width, uint8_t *buf, uint16_t size)
         /* do log output */
         log_port_output(log_buf, log_len);
 
-#ifdef LOG_FILE_ENABLE
         /* write the file */
         log_file_write(log_buf, log_len);
-#endif
     }
     /* unlock output */
     log_port_output_unlock();
 }
 
-/**
- * EasyLogger port initialize
- *
- * @return result
- */
+/* log port */
+#include <unistd.h>
+#include <pthread.h>
+#include <sys/time.h>
+
+static pthread_mutex_t output_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* log port initialize */
 static int log_port_init(void) {
     return 0;
 }
 
-/**
- * output log port interface
- *
- * @param log output of log
- * @param size log size
- */
+/* output log */
 static void log_port_output(const char *log, size_t size) {
     printf("%.*s", (int)size, log);
 }
 
-/**
- * output lock
- */
+/* output lock */
 static void log_port_output_lock(void) {
     pthread_mutex_lock(&output_lock);
 }
 
-/**
- * output unlock
- */
+/* output unlock */
 static void log_port_output_unlock(void) {
     pthread_mutex_unlock(&output_lock);
 }
 
-/**
- * get current time interface
- *
- * @return current time
- */
+/* current time */
 static const char *log_port_get_time(void) {
     static char cur_system_time[32] = { 0 };
 
@@ -934,11 +934,7 @@ static const char *log_port_get_time(void) {
     return cur_system_time;
 }
 
-/**
- * get current process name interface
- *
- * @return current process name
- */
+/* current process name */
 static const char *log_port_get_p_info(void) {
     static char cur_process_info[10] = { 0 };
 
@@ -947,11 +943,7 @@ static const char *log_port_get_p_info(void) {
     return cur_process_info;
 }
 
-/**
- * get current thread name interface
- *
- * @return current thread name
- */
+/* current thread name */
 static const char *log_port_get_t_info(void) {
     static char cur_thread_info[10] = { 0 };
 
@@ -960,7 +952,8 @@ static const char *log_port_get_t_info(void) {
     return cur_thread_info;
 }
 
-#ifdef LOG_FILE_ENABLE
+/* file port */
+static pthread_mutex_t file_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /*  file port initialize */
 static int log_file_port_init(void) {
@@ -984,5 +977,3 @@ static void log_file_port_deinit(void)
 {
 
 }
-
-#endif
